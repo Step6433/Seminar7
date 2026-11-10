@@ -5,12 +5,10 @@
 #include <chrono>
 #include <thread>
 #include <vector>
-#include <mutex>
-#include <condition_variable>
+#include <atomic>
 #include <algorithm>
 
 const int N = 550;
-const int REPEATS = 5;
 
 void generateMatrix(double arr[N][N]) {
     for (int i = 0; i < N; ++i) {
@@ -21,7 +19,19 @@ void generateMatrix(double arr[N][N]) {
 }
 
 void IKJ(double A[N][N], double B[N][N], double C[N][N],
-         int start_row, int end_row) {
+         int start_row, int end_row,
+         std::atomic<bool>& start_flag,
+         std::atomic<unsigned int>& ready_count) {
+
+    // Сообщаем, что поток готов к работе
+    ready_count.fetch_add(1);
+
+    // Ждем сигнала от главного потока
+    while (!start_flag.load()) {
+        std::this_thread::yield();
+    }
+
+    // Умножение матриц в порядке i, k, j
     for (int i = start_row; i < end_row; ++i)
         for (int k = 0; k < N; ++k)
             for (int j = 0; j < N; ++j)
@@ -35,6 +45,9 @@ int main() {
     static double B[N][N] = {0};
     static double C[N][N] = {0};
 
+    generateMatrix(B);
+    generateMatrix(C);
+
     unsigned int num_threads = std::thread::hardware_concurrency();
 
     if (num_threads == 0)
@@ -42,97 +55,47 @@ int main() {
 
     num_threads = std::min(num_threads, static_cast<unsigned int>(N));
 
-    std::mutex mtx;
-    std::condition_variable cv_start;
-    std::condition_variable cv_done;
-
-    int generation = 0;
-    unsigned int finished = 0;
-    bool stop = false;
+    std::atomic<bool> start_flag(false);
+    std::atomic<unsigned int> ready_count(0);
 
     std::vector<std::thread> threads;
 
-    // Создаем потоки только один раз
+    // Создаем потоки до запуска таймера
     for (unsigned int t = 0; t < num_threads; ++t) {
         int start_row = t * N / num_threads;
         int end_row = (t + 1) * N / num_threads;
 
-        threads.emplace_back([&, start_row, end_row]() {
-            int last_generation = 0;
-
-            while (true) {
-                {
-                    std::unique_lock<std::mutex> lock(mtx);
-                    cv_start.wait(lock, [&]() {
-                        return generation > last_generation || stop;
-                    });
-
-                    if (stop)
-                        return;
-
-                    last_generation = generation;
-                }
-
-                IKJ(A, B, C, start_row, end_row);
-
-                {
-                    std::lock_guard<std::mutex> lock(mtx);
-                    ++finished;
-
-                    if (finished == num_threads)
-                        cv_done.notify_one();
-                }
-            }
-        });
+        threads.emplace_back(
+            IKJ, A, B, C, start_row, end_row,
+            std::ref(start_flag), std::ref(ready_count)
+        );
     }
 
-    double total_time = 0;
-
-    for (int i = 0; i < REPEATS; ++i) {
-        generateMatrix(B);
-        generateMatrix(C);
-
-        for (int a = 0; a < N; ++a)
-            for (int b = 0; b < N; ++b)
-                A[a][b] = 0.0;
-
-        auto start_time = std::chrono::high_resolution_clock::now();
-
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            finished = 0;
-            ++generation;
-        }
-
-        cv_start.notify_all();
-
-        {
-            std::unique_lock<std::mutex> lock(mtx);
-            cv_done.wait(lock, [&]() {
-                return finished == num_threads;
-            });
-        }
-
-        auto end_time = std::chrono::high_resolution_clock::now();
-
-        total_time += std::chrono::duration<double>(
-            end_time - start_time
-        ).count();
+    // Ждем готовности всех потоков
+    while (ready_count.load() < num_threads) {
+        std::this_thread::yield();
     }
 
-    // Завершаем рабочие потоки
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        stop = true;
-    }
+    // Запускаем таймер
+    auto start_time = std::chrono::high_resolution_clock::now();
 
-    cv_start.notify_all();
+    // Разрешаем потокам начать вычисления
+    start_flag.store(true);
 
-    for (auto& thread : threads)
+    // Ожидаем завершения всех потоков
+    for (auto& thread : threads) {
         thread.join();
+    }
+
+    // Останавливаем таймер
+    auto end_time = std::chrono::high_resolution_clock::now();
+
+    double total_time = std::chrono::duration<double>(
+        end_time - start_time
+    ).count();
 
     std::cout << "Threads: " << num_threads << std::endl;
-    std::cout << "IKJ," << N << "," << total_time / REPEATS << std::endl;
+    std::cout << "IKJ," << N << "," << total_time << std::endl;
 
     return 0;
 }

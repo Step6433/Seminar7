@@ -4,7 +4,7 @@
 #include <ctime>
 #include <chrono>
 
-const int N = 800;
+const int N = 550;
 
 void generateMatrix(double arr[N][N]) {
     for (int i = 0; i < N; ++i) {

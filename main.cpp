@@ -19,22 +19,28 @@ void generateMatrix(double arr[N][N]) {
     }
 }
 
-void IJK(double A[N][N], double B[N][N], double C[N][N],
+// Многопоточное умножение в порядке i, k, j
+void IKJ(double A[N][N], double B[N][N], double C[N][N],
          int start_row, int end_row,
          std::atomic<bool>& start_flag,
          std::atomic<unsigned int>& ready_count) {
 
+    // Сообщаем о готовности потока
     ready_count.fetch_add(1);
 
+    // Ожидаем сигнала запуска
     while (!start_flag.load()) {
         std::this_thread::yield();
     }
 
-    // Порядок циклов i, j, k
-    for (int i = start_row; i < end_row; ++i)
-        for (int j = 0; j < N; ++j)
-            for (int k = 0; k < N; ++k)
+    // Вычисляем только свой диапазон строк
+    for (int i = start_row; i < end_row; ++i) {
+        for (int k = 0; k < N; ++k) {
+            for (int j = 0; j < N; ++j) {
                 A[i][j] = A[i][j] + B[i][k] * C[k][j];
+            }
+        }
+    }
 }
 
 int main() {
@@ -47,48 +53,61 @@ int main() {
     generateMatrix(B);
     generateMatrix(C);
 
+    // Определяем количество потоков
     unsigned int num_threads = std::thread::hardware_concurrency();
 
-    if (num_threads == 0)
+    if (num_threads == 0) {
         num_threads = 1;
+    }
 
-    num_threads = std::min(num_threads, static_cast<unsigned int>(N));
+    num_threads = std::min(
+        num_threads, static_cast<unsigned int>(N)
+    );
 
     std::atomic<bool> start_flag(false);
     std::atomic<unsigned int> ready_count(0);
 
     std::vector<std::thread> threads;
 
+    // Создаем потоки до запуска таймера
     for (unsigned int t = 0; t < num_threads; ++t) {
         int start_row = t * N / num_threads;
         int end_row = (t + 1) * N / num_threads;
 
         threads.emplace_back(
-            IJK, A, B, C, start_row, end_row,
-            std::ref(start_flag), std::ref(ready_count)
+            IKJ, A, B, C,
+            start_row, end_row,
+            std::ref(start_flag),
+            std::ref(ready_count)
         );
     }
 
+    // Ожидаем готовности всех потоков
     while (ready_count.load() < num_threads) {
         std::this_thread::yield();
     }
 
+    // Начинаем измерение времени
     auto start_time = std::chrono::high_resolution_clock::now();
 
+    // Разрешаем всем потокам начать вычисления
     start_flag.store(true);
 
+    // Ожидаем завершения вычислений
     for (auto& thread : threads) {
         thread.join();
     }
 
+    // Завершаем измерение времени
     auto end_time = std::chrono::high_resolution_clock::now();
 
-    double total_time = std::chrono::duration<double>(
+    double total_time = std::chrono::duration<double, std::milli>(
         end_time - start_time
     ).count();
 
+    std::cout << "Matrix size: " << N << " x " << N << std::endl;
     std::cout << "Threads: " << num_threads << std::endl;
-    std::cout << "IJK," << N << "," << total_time << std::endl;
+    std::cout << "IKJ time: " << total_time << " ms" << std::endl;
 
     return 0;
 }

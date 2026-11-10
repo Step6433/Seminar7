@@ -1,0 +1,4 @@
+build/
+matrix_mul
+*.o
+.DS_Store
